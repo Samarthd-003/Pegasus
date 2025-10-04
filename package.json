@@ -1,0 +1,28 @@
+{
+  "name": "pegasus-service",
+  "version": "1.0.0",
+  "description": "A Node.js Express service with structured logging and modular design.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "jest"
+  },
+  "keywords": [
+    "express",
+    "nodejs",
+    "structured-logging"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "winston": "^3.8.2"
+  },
+  "devDependencies": {
+    "jest": "^29.3.1",
+    "nodemon": "^2.0.20",
+    "supertest": "^6.3.3"
+  }
+}
