@@ -385,7 +385,7 @@ async function handlePaymentCaptured(payload, idempotencyKey) {
 /**
  * Handles payment.failed event
  * Persists failure information and updates order status
- * Does NOT throw on failures to prevent blocking other webhooks
+ * Preserves all failure details for debugging and recovery
  * 
  * @param {Object} payload - Webhook payload
  * @param {string} idempotencyKey - Idempotency key for tracking
@@ -412,42 +412,74 @@ async function handlePaymentFailed(payload, idempotencyKey) {
       throw new WebhookProcessingError('Payment ID is required');
     }
 
+    // Extract comprehensive failure information
     const failureReason = payment.error_description || payment.error_reason || 'Payment failed';
+    const errorCode = payment.error_code || 'UNKNOWN_ERROR';
+    const errorSource = payment.error_source || 'gateway';
+    const errorStep = payment.error_step || 'payment_processing';
 
-    logger.info('Persisting failed payment', {
+    logger.warn('💥 Payment failure detected', {
       paymentId: payment.id,
       orderId: payment.order_id,
       failureReason,
-      errorCode: payment.error_code,
+      errorCode,
+      errorSource,
+      errorStep,
+      amount: payment.amount,
+      currency: payment.currency,
+      method: payment.method,
       idempotencyKey,
     });
 
-    // Persist payment data with failed status
+    // Persist payment data with comprehensive failure information
     await persistPayment({ 
       ...payment, 
       status: 'failed',
       failureReason,
+      failedAt: new Date().toISOString(),
     });
 
-    // Update order status to failed
+    // Update order status to failed with full failure context
     if (payment.order_id) {
-      logger.info('Updating order status to failed', {
+      logger.info('Updating order status to failed with failure details', {
         orderId: payment.order_id,
         paymentId: payment.id,
         failureReason,
+        errorCode,
         idempotencyKey,
       });
 
       await updateOrderStatus(payment.order_id, 'failed', {
         paymentId: payment.id,
         failureReason,
-        errorCode: payment.error_code,
+        errorCode,
+        errorDescription: payment.error_description,
+        errorSource,
+        errorStep,
         failedAt: new Date().toISOString(),
         idempotencyKey,
+        // Preserve payment details for retry attempts
+        metadata: {
+          paymentMethod: payment.method,
+          paymentAmount: payment.amount,
+          paymentCurrency: payment.currency,
+          paymentEmail: payment.email,
+          paymentContact: payment.contact,
+          failureTimestamp: new Date().toISOString(),
+        },
+      });
+
+      logger.info('✅ Order marked as failed with preserved failure information', {
+        orderId: payment.order_id,
+        paymentId: payment.id,
+        failureReason,
+        errorCode,
       });
     } else {
-      logger.warn('No order_id in failed payment, skipping order update', {
+      logger.warn('⚠️  No order_id in failed payment, skipping order update', {
         paymentId: payment.id,
+        failureReason,
+        errorCode,
         idempotencyKey,
       });
     }
@@ -456,6 +488,7 @@ async function handlePaymentFailed(payload, idempotencyKey) {
       paymentId: payment.id,
       orderId: payment.order_id,
       failureReason,
+      errorCode,
       idempotencyKey,
     });
 
@@ -465,10 +498,12 @@ async function handlePaymentFailed(payload, idempotencyKey) {
       paymentId: payment.id,
       orderId: payment.order_id,
       failureReason,
+      errorCode,
+      errorDescription: payment.error_description,
     };
   } catch (error) {
     // Log error but mark as processed to prevent retries
-    logger.error('Failed to process payment.failed webhook (logging only)', {
+    logger.error('❌ Failed to process payment.failed webhook', {
       error: error.message,
       idempotencyKey,
       stack: error.stack,
