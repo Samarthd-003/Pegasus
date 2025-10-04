@@ -275,14 +275,30 @@ All the following functions are implemented and tested:
 
 ### Payment Service (`src/services/paymentService.js`)
 
-- **`verifyRazorpaySignature(webhookBody, signature, secret)`** - Verifies webhook signature using HMAC SHA256
+- **`verifyRazorpaySignature(webhookBody, signature, secret)`** - ✨ **Enhanced** - Verifies webhook signature using HMAC-SHA256 with:
+  - Timing-safe comparison to prevent timing attacks
+  - Typed errors (`SignatureVerificationError`, `ValidationError`)
+  - Comprehensive context logging for security auditing
+  - Multiple validation checks (format, length, content)
 - **`persistPayment(paymentData)`** - Persists payment information to storage
 - **`getPaymentById(paymentId)`** - Retrieves payment by ID
 
 ### Webhook Service (`src/services/webhookService.js`)
 
-- **`handleWebhook(webhookPayload, signature, rawBody)`** - Main webhook handler with signature verification
+- **`handleWebhook(webhookPayload, signature, rawBody, headers)`** - ✨ **Enhanced** - Main webhook handler with:
+  - HMAC-SHA256 signature verification (throws on mismatch)
+  - Idempotency key extraction from headers/body
+  - Duplicate request detection
+  - Context logging with duration tracking
 - Supports events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`
+
+### Idempotency Utils (`src/utils/idempotency.js`)
+
+- **`extractIdempotencyKey(headers, body)`** - Extracts idempotency key from multiple sources
+- **`generateIdempotencyKey(data)`** - Generates fallback idempotency key
+- **`isKeyProcessed(key)`** - Checks if webhook was already processed
+- **`markKeyProcessed(key, result, ttl)`** - Marks webhook as processed with caching
+- **`getProcessedResult(key)`** - Retrieves cached result for duplicate requests
 
 ## Mock Data
 
@@ -331,8 +347,19 @@ The project includes comprehensive unit tests for:
 
 - ✅ All service functions
 - ✅ All controllers
-- ✅ Webhook signature verification
-- ✅ Error handling
+- ✅ ✨ **Enhanced webhook signature verification** (40+ test cases)
+  - Valid/invalid signatures
+  - Missing parameters
+  - Format validation
+  - Length mismatch detection
+  - Timing attack prevention
+  - Edge cases (unicode, special chars, large payloads)
+- ✅ ✨ **Idempotency utilities** (15+ test cases)
+  - Key extraction from multiple sources
+  - Duplicate detection
+  - TTL expiration
+  - Edge cases
+- ✅ Error handling with typed errors
 - ✅ API endpoints (integration tests)
 
 Test coverage includes:
@@ -340,14 +367,23 @@ Test coverage includes:
 - Error scenarios
 - Edge cases
 - Invalid input handling
+- Security edge cases
 
 ## Security Features
 
 - **Helmet.js**: Security headers
 - **CORS**: Cross-origin resource sharing
-- **Webhook Signature Verification**: HMAC SHA256 validation
+- **✨ Enhanced Webhook Signature Verification**: 
+  - HMAC-SHA256 validation with timing-safe comparison
+  - Typed errors with detailed context logging
+  - Multiple validation checks (format, length, content)
+  - Protection against timing attacks
+- **✨ Idempotency Support**:
+  - Automatic duplicate webhook detection
+  - Multiple idempotency key sources
+  - Configurable TTL for cached results
 - **Environment Variables**: Sensitive data not hardcoded
-- **Error Handling**: Sanitized error responses
+- **Error Handling**: Sanitized error responses with typed errors
 
 ## Development
 

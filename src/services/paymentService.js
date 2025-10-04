@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const logger = require('../utils/logger');
 const config = require('../config');
 const { mockRazorpayPayment } = require('../mocks/razorpay.mock');
+const { SignatureVerificationError, ValidationError } = require('../utils/errors');
 
 /**
  * In-memory store for payments (replace with actual database in production)
@@ -10,49 +11,178 @@ const paymentsStore = new Map();
 
 /**
  * Verifies the Razorpay webhook signature to ensure authenticity
- * @param {string} webhookBody - Raw webhook body as string
- * @param {string} signature - Razorpay signature from headers
+ * Uses HMAC-SHA256 to verify the webhook payload against the signature
+ * 
+ * @param {string} webhookBody - Raw webhook body as string (must be raw, not parsed)
+ * @param {string} signature - Razorpay signature from x-razorpay-signature header
  * @param {string} secret - Webhook secret (defaults to config)
- * @returns {boolean} True if signature is valid, false otherwise
+ * @throws {SignatureVerificationError} When signature verification fails
+ * @throws {ValidationError} When required parameters are missing
+ * @returns {boolean} True if signature is valid
  */
 function verifyRazorpaySignature(webhookBody, signature, secret = null) {
+  const startTime = Date.now();
+  const context = {
+    hasBody: !!webhookBody,
+    bodyLength: webhookBody ? webhookBody.length : 0,
+    hasSignature: !!signature,
+    signatureLength: signature ? signature.length : 0,
+    hasSecret: !!(secret || config.razorpay.webhookSecret),
+  };
+
+  logger.info('Starting Razorpay signature verification', context);
+
   try {
-    logger.info('Verifying Razorpay signature');
+    // Validate required parameters
+    if (!webhookBody || typeof webhookBody !== 'string') {
+      logger.error('Invalid webhook body provided', {
+        ...context,
+        bodyType: typeof webhookBody,
+      });
+      throw new ValidationError('Webhook body must be a non-empty string', {
+        ...context,
+        reason: 'invalid_body',
+      });
+    }
+
+    if (!signature || typeof signature !== 'string') {
+      logger.error('Invalid or missing signature', {
+        ...context,
+        signatureType: typeof signature,
+      });
+      throw new SignatureVerificationError('Webhook signature is required', {
+        ...context,
+        reason: 'missing_signature',
+      });
+    }
 
     const webhookSecret = secret || config.razorpay.webhookSecret;
 
+    // Check if webhook secret is configured
     if (!webhookSecret) {
-      logger.warn('Webhook secret not configured, skipping verification');
-      // In mock mode, return true if no secret is configured
-      return true;
-    }
-
-    if (!signature) {
-      logger.error('No signature provided');
-      return false;
+      logger.warn('Webhook secret not configured, operating in mock mode', context);
+      // In development/mock mode, allow webhooks without secret
+      if (config.server.nodeEnv === 'development') {
+        logger.info('Development mode: Skipping signature verification', context);
+        return true;
+      }
+      // In production, this is a configuration error
+      throw new ValidationError('Webhook secret not configured', {
+        ...context,
+        reason: 'missing_secret',
+        environment: config.server.nodeEnv,
+      });
     }
 
     // Generate expected signature using HMAC SHA256
+    // Razorpay uses the raw body directly for signature generation
     const expectedSignature = crypto
       .createHmac('sha256', webhookSecret)
       .update(webhookBody)
       .digest('hex');
 
+    logger.debug('Signature generated', {
+      ...context,
+      expectedSignatureLength: expectedSignature.length,
+    });
+
+    // Validate signature format (should be hex string)
+    const hexRegex = /^[a-f0-9]+$/i;
+    if (!hexRegex.test(signature)) {
+      logger.error('Invalid signature format', {
+        ...context,
+        signatureFormat: 'not_hex',
+      });
+      throw new SignatureVerificationError('Signature must be a valid hex string', {
+        ...context,
+        reason: 'invalid_format',
+      });
+    }
+
+    if (!hexRegex.test(expectedSignature)) {
+      logger.error('Generated signature has invalid format', {
+        ...context,
+        reason: 'generation_error',
+      });
+      throw new SignatureVerificationError('Failed to generate valid signature', {
+        ...context,
+        reason: 'generation_error',
+      });
+    }
+
+    // Check if signatures have the same length before comparison
+    if (signature.length !== expectedSignature.length) {
+      const duration = Date.now() - startTime;
+      logger.error('Signature length mismatch', {
+        ...context,
+        providedLength: signature.length,
+        expectedLength: expectedSignature.length,
+        duration: `${duration}ms`,
+      });
+      throw new SignatureVerificationError('Signature verification failed', {
+        ...context,
+        reason: 'length_mismatch',
+        providedLength: signature.length,
+        expectedLength: expectedSignature.length,
+      });
+    }
+
     // Use timingSafeEqual to prevent timing attacks
     const isValid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
+      Buffer.from(signature, 'utf8'),
+      Buffer.from(expectedSignature, 'utf8')
     );
 
-    logger.info('Signature verification result', { isValid });
+    const duration = Date.now() - startTime;
 
-    return isValid;
+    if (!isValid) {
+      logger.error('Signature verification failed: Signature mismatch', {
+        ...context,
+        duration: `${duration}ms`,
+        reason: 'signature_mismatch',
+      });
+      throw new SignatureVerificationError('Signature verification failed', {
+        ...context,
+        reason: 'signature_mismatch',
+        duration: `${duration}ms`,
+      });
+    }
+
+    logger.info('Signature verification successful', {
+      ...context,
+      duration: `${duration}ms`,
+    });
+
+    return true;
   } catch (error) {
-    logger.error('Error verifying Razorpay signature', {
+    const duration = Date.now() - startTime;
+    
+    // Re-throw our custom errors
+    if (error instanceof SignatureVerificationError || error instanceof ValidationError) {
+      logger.error('Signature verification error', {
+        ...context,
+        error: error.message,
+        errorType: error.name,
+        errorContext: error.context,
+        duration: `${duration}ms`,
+      });
+      throw error;
+    }
+
+    // Handle unexpected errors
+    logger.error('Unexpected error during signature verification', {
+      ...context,
       error: error.message,
       stack: error.stack,
+      duration: `${duration}ms`,
     });
-    return false;
+    
+    throw new SignatureVerificationError('Signature verification failed due to unexpected error', {
+      ...context,
+      reason: 'unexpected_error',
+      originalError: error.message,
+      duration: `${duration}ms`,
+    });
   }
 }
 
