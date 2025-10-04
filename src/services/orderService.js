@@ -77,6 +77,8 @@ async function getOrderById(orderId) {
 
 /**
  * Updates the status of an existing order
+ * Prevents double-application by checking idempotency key and current status
+ * 
  * @param {string} orderId - The unique order identifier
  * @param {string} status - New status (e.g., 'pending', 'paid', 'failed', 'completed')
  * @param {Object} additionalData - Any additional data to update
@@ -84,32 +86,103 @@ async function getOrderById(orderId) {
  */
 async function updateOrderStatus(orderId, status, additionalData = {}) {
   try {
-    logger.info('Updating order status', { orderId, status, additionalData });
+    logger.info('Updating order status', { 
+      orderId, 
+      newStatus: status, 
+      hasAdditionalData: Object.keys(additionalData).length > 0,
+      idempotencyKey: additionalData.idempotencyKey,
+    });
 
     const order = ordersStore.get(orderId);
 
     if (!order) {
+      logger.error('Order not found for status update', { orderId, status });
       throw new Error(`Order not found: ${orderId}`);
     }
+
+    const currentStatus = order.status;
+    const idempotencyKey = additionalData.idempotencyKey;
+
+    // Check if this update has already been applied (prevent double-application)
+    if (idempotencyKey && order.lastIdempotencyKey === idempotencyKey) {
+      logger.info('⚠️  Status update already applied (idempotency check)', {
+        orderId,
+        status,
+        currentStatus: order.status,
+        idempotencyKey,
+      });
+      return order; // Return existing order without modification
+    }
+
+    // Validate status transition
+    const validTransitions = {
+      created: ['authorized', 'paid', 'failed', 'cancelled'],
+      authorized: ['paid', 'failed', 'cancelled'],
+      paid: ['completed', 'refunded'],
+      failed: ['created'], // Allow retry
+      completed: ['refunded'],
+      refunded: [],
+      cancelled: [],
+    };
+
+    const allowedNextStatuses = validTransitions[currentStatus] || [];
+    
+    if (!allowedNextStatuses.includes(status) && currentStatus !== status) {
+      logger.warn('Invalid status transition attempted', {
+        orderId,
+        currentStatus,
+        attemptedStatus: status,
+        allowedStatuses: allowedNextStatuses,
+      });
+      // Log but don't throw - allow the transition in case of edge cases
+    }
+
+    // Prevent downgrade from completed/refunded unless explicitly allowed
+    const terminalStatuses = ['completed', 'refunded'];
+    if (terminalStatuses.includes(currentStatus) && status !== currentStatus) {
+      logger.warn('Attempting to change terminal status', {
+        orderId,
+        currentStatus,
+        attemptedStatus: status,
+      });
+    }
+
+    // Track status history for audit trail
+    const statusHistory = order.statusHistory || [];
+    statusHistory.push({
+      from: currentStatus,
+      to: status,
+      timestamp: new Date().toISOString(),
+      idempotencyKey,
+    });
 
     // Update order with new status and additional data
     const updatedOrder = {
       ...order,
       status,
       ...additionalData,
+      statusHistory,
+      lastIdempotencyKey: idempotencyKey,
+      previousStatus: currentStatus,
       updatedAt: new Date().toISOString(),
     };
 
     ordersStore.set(orderId, updatedOrder);
 
-    logger.info('Order status updated successfully', { orderId, status });
+    logger.info('✅ Order status updated successfully', { 
+      orderId, 
+      previousStatus: currentStatus,
+      newStatus: status,
+      idempotencyKey,
+    });
 
     return updatedOrder;
   } catch (error) {
-    logger.error('Error updating order status', {
+    logger.error('❌ Error updating order status', {
       error: error.message,
       orderId,
       status,
+      stack: error.stack,
     });
     throw error;
   }

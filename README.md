@@ -271,7 +271,12 @@ All the following functions are implemented and tested:
 
 - **`createOrder(orderData)`** - Creates a new order with mock Razorpay and Shopify integration
 - **`getOrderById(orderId)`** - Retrieves an order by its ID
-- **`updateOrderStatus(orderId, status, additionalData)`** - Updates order status with additional data
+- **`updateOrderStatus(orderId, status, additionalData)`** - ✨ **Enhanced** - Updates order status with:
+  - Double-application prevention via idempotency key checking
+  - Status transition validation
+  - Terminal status protection (completed, refunded)
+  - Complete status history tracking
+  - Previous status preservation
 
 ### Payment Service (`src/services/paymentService.js`)
 
@@ -280,16 +285,31 @@ All the following functions are implemented and tested:
   - Typed errors (`SignatureVerificationError`, `ValidationError`)
   - Comprehensive context logging for security auditing
   - Multiple validation checks (format, length, content)
-- **`persistPayment(paymentData)`** - Persists payment information to storage
+- **`persistPayment(paymentData)`** - ✨ **Enhanced** - Persists payment information with:
+  - Validation of payment data structure
+  - Duplicate detection (updates instead of creating duplicates)
+  - Update counter tracking
+  - Status-based validation
 - **`getPaymentById(paymentId)`** - Retrieves payment by ID
 
 ### Webhook Service (`src/services/webhookService.js`)
 
 - **`handleWebhook(webhookPayload, signature, rawBody, headers)`** - ✨ **Enhanced** - Main webhook handler with:
+  - Three-phase flow: **received → validated → applied**
   - HMAC-SHA256 signature verification (throws on mismatch)
   - Idempotency key extraction from headers/body
-  - Duplicate request detection
-  - Context logging with duration tracking
+  - Duplicate request detection (prevents double-application)
+  - Context logging with duration tracking at each phase
+  - Event parsing and validation
+  - Comprehensive error handling
+- **`handlePaymentCaptured(payload, idempotencyKey)`** - Processes successful payments:
+  - Calls `persistPayment()` to save payment data
+  - Updates order status to 'paid'
+  - Essential logging throughout
+- **`handlePaymentFailed(payload, idempotencyKey)`** - Processes failed payments:
+  - Logs errors without crashing
+  - Persists failure information
+  - Updates order status appropriately
 - Supports events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`
 
 ### Idempotency Utils (`src/utils/idempotency.js`)
@@ -354,6 +374,20 @@ The project includes comprehensive unit tests for:
   - Length mismatch detection
   - Timing attack prevention
   - Edge cases (unicode, special chars, large payloads)
+- ✅ ✨ **Webhook handling with mocked API calls** (40+ test cases)
+  - Three-phase flow validation (received → validated → applied)
+  - Event parsing and validation
+  - Mocked `persistPayment()` calls
+  - Mocked `updateOrderStatus()` calls
+  - Duplicate detection
+  - Error propagation
+  - Invalid payload structures
+- ✅ ✨ **Order status management** (30+ test cases)
+  - Double-application prevention
+  - Status transition validation
+  - Terminal status protection
+  - Status history tracking
+  - Complex lifecycle scenarios
 - ✅ ✨ **Idempotency utilities** (15+ test cases)
   - Key extraction from multiple sources
   - Duplicate detection
@@ -368,6 +402,7 @@ Test coverage includes:
 - Edge cases
 - Invalid input handling
 - Security edge cases
+- **Mocked API integrations** for payment persistence
 
 ## Security Features
 

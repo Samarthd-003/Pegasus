@@ -188,42 +188,104 @@ function verifyRazorpaySignature(webhookBody, signature, secret = null) {
 
 /**
  * Persists payment information to the database
+ * Validates payment data and prevents duplicate persistence
+ * 
  * @param {Object} paymentData - Payment data from Razorpay
  * @returns {Promise<Object>} Persisted payment object
  */
 async function persistPayment(paymentData) {
   try {
-    logger.info('Persisting payment data', { paymentData });
+    logger.info('Persisting payment data', { 
+      paymentId: paymentData?.id,
+      orderId: paymentData?.order_id,
+      amount: paymentData?.amount,
+      status: paymentData?.status,
+    });
 
-    if (!paymentData || !paymentData.id) {
-      throw new Error('Invalid payment data: payment ID is required');
+    // Validate payment data
+    if (!paymentData || typeof paymentData !== 'object') {
+      logger.error('Invalid payment data: must be an object', { paymentData });
+      throw new ValidationError('Invalid payment data: must be an object');
     }
 
-    // Create payment record (stubbed with mock data)
+    if (!paymentData.id) {
+      logger.error('Invalid payment data: payment ID is required', { paymentData });
+      throw new ValidationError('Invalid payment data: payment ID is required');
+    }
+
+    const paymentId = paymentData.id;
+
+    // Check if payment already exists (prevent double-persistence)
+    const existingPayment = paymentsStore.get(paymentId);
+    if (existingPayment) {
+      logger.info('⚠️  Payment already persisted, updating instead', {
+        paymentId,
+        existingStatus: existingPayment.status,
+        newStatus: paymentData.status,
+      });
+
+      // Update existing payment with new data
+      const updatedPayment = {
+        ...existingPayment,
+        ...paymentData,
+        updatedAt: new Date().toISOString(),
+        updateCount: (existingPayment.updateCount || 0) + 1,
+      };
+
+      paymentsStore.set(paymentId, updatedPayment);
+
+      logger.info('✅ Payment updated successfully', { 
+        paymentId,
+        updateCount: updatedPayment.updateCount,
+      });
+
+      return updatedPayment;
+    }
+
+    // Create new payment record
     const payment = {
-      id: paymentData.id || `pay_${Date.now()}`,
-      razorpayPaymentId: paymentData.razorpay_payment_id || mockRazorpayPayment.id,
-      razorpayOrderId: paymentData.razorpay_order_id || mockRazorpayPayment.order_id,
-      razorpaySignature: paymentData.razorpay_signature || 'mock_signature',
-      amount: paymentData.amount || mockRazorpayPayment.amount,
-      currency: paymentData.currency || mockRazorpayPayment.currency,
-      status: paymentData.status || 'captured',
-      method: paymentData.method || mockRazorpayPayment.method,
-      email: paymentData.email || mockRazorpayPayment.email,
-      contact: paymentData.contact || mockRazorpayPayment.contact,
+      id: paymentId,
+      razorpayPaymentId: paymentData.razorpay_payment_id || paymentData.id,
+      razorpayOrderId: paymentData.razorpay_order_id || paymentData.order_id || null,
+      razorpaySignature: paymentData.razorpay_signature || null,
+      amount: paymentData.amount || 0,
+      currency: paymentData.currency || 'INR',
+      status: paymentData.status || 'created',
+      method: paymentData.method || null,
+      email: paymentData.email || null,
+      contact: paymentData.contact || null,
+      errorCode: paymentData.error_code || null,
+      errorDescription: paymentData.error_description || null,
+      failureReason: paymentData.failureReason || null,
+      captured: paymentData.captured || false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      updateCount: 0,
     };
 
-    // Store payment in memory
+    // Validate required fields based on status
+    if (payment.status === 'captured' && (!payment.amount || payment.amount <= 0)) {
+      logger.warn('Captured payment has invalid amount', {
+        paymentId,
+        amount: payment.amount,
+      });
+    }
+
+    // Store payment in memory (in production, this would be a database call)
     paymentsStore.set(payment.id, payment);
 
-    logger.info('Payment persisted successfully', { paymentId: payment.id });
+    logger.info('✅ Payment persisted successfully', { 
+      paymentId: payment.id,
+      orderId: payment.razorpayOrderId,
+      amount: payment.amount,
+      status: payment.status,
+    });
 
     return payment;
   } catch (error) {
-    logger.error('Error persisting payment', {
+    logger.error('❌ Error persisting payment', {
       error: error.message,
+      paymentId: paymentData?.id,
       stack: error.stack,
     });
     throw error;
